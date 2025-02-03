@@ -1,0 +1,13 @@
+{
+	"id": "obsidian-jupyter-notebook-plugin",
+	"name": "Jupyter Notebook Viewer",
+	"version": "0.1.0",
+	"minAppVersion": "1.4.0",
+	"description": "View and edit Jupyter notebooks in Obsidian",
+	"author": "Geng",
+	"authorUrl": "https://github.com/gengyabc/obsidian-jupyter-notebook-plugin",
+	"isDesktopOnly": false,
+	"supportedExtensions": [
+		"ipynb"
+	]
+}
