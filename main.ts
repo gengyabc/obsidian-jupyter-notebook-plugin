@@ -1264,185 +1264,104 @@ export default class JupyterPlugin extends Plugin {
 	}
 
 	private async renderOutput(output: JupyterOutput, container: HTMLElement) {
-		// 创建一个离线的容器来构建内容
-		const virtualContainer = document.createElement("div");
-		virtualContainer.style.position = "absolute";
-		virtualContainer.style.visibility = "hidden";
-		document.body.appendChild(virtualContainer);
+		// 创建文档片段来减少 DOM 操作
+		const fragment = document.createDocumentFragment();
+		const outputDiv = fragment.createDiv({ cls: "output" });
 
-		// 使用 IntersectionObserver 延迟加载不在视口中的内容
-		const observer = new IntersectionObserver(
-			(entries) => {
-				entries.forEach((entry) => {
-					if (entry.isIntersecting) {
-						this.renderOutputContent(
-							output,
-							entry.target as HTMLElement
-						);
-						observer.disconnect();
-					}
+		if (output.output_type === "stream") {
+			outputDiv.createEl("pre").setText(output.text?.join("") || "");
+		} else if (
+			output.output_type === "execute_result" ||
+			output.output_type === "display_data"
+		) {
+			// 检查是否是 IPython 图片对象
+			const text = output.data?.["text/plain"]?.join("") || "";
+			const isIPythonImage = text.includes("IPython.core.display.Image");
+
+			if (isIPythonImage) {
+				// 添加详细的调试日志
+				console.log("Found IPython Image object");
+				console.log("Full output:", output);
+				console.log("Data:", output.data);
+				console.log("Metadata:", output.metadata);
+
+				// 尝试所有可能的图片数据位置
+				let imageData = null;
+
+				// 检查所有可能的数据位置
+				const possibleLocations = [
+					output.data?.["image/png"],
+					output.metadata?.["image/png"],
+					output.data?.["application/json"]?.["image/png"],
+					output.data?.["image/jpeg"],
+					output.data?.["application/x-jupyter-data"]?.["image/png"],
+					output.data?.["application/x-jupyter"]?.["image/png"],
+				];
+
+				// 记录所有位置的检查结果
+				possibleLocations.forEach((location, index) => {
+					console.log(
+						`Location ${index}:`,
+						location ? "Has data" : "No data"
+					);
 				});
-			},
-			{
-				rootMargin: "50px", // 预加载阈值
-			}
-		);
 
-		// 创建占位符
-		const placeholder = container.createDiv({ cls: "output-placeholder" });
-		observer.observe(placeholder);
+				// 使用第一个有效的数据源
+				imageData = possibleLocations.find((data) => data);
 
-		return placeholder;
-	}
-
-	private async renderOutputContent(
-		output: JupyterOutput,
-		container: HTMLElement
-	) {
-		// 使用 Web Worker 处理数据转换
-		const processData = async () => {
-			const fragment = document.createDocumentFragment();
-			const outputDiv = fragment.createDiv({ cls: "output" });
-
-			if (output.output_type === "stream") {
-				this.createStreamContent(output, outputDiv);
-			} else if (
-				output.output_type === "execute_result" ||
-				output.output_type === "display_data"
-			) {
-				await this.createRichContent(output, outputDiv);
-			} else if (output.output_type === "error") {
-				this.createErrorContent(output, outputDiv);
-			}
-
-			return fragment;
-		};
-
-		try {
-			const fragment = await processData();
-
-			// 使用 requestAnimationFrame 分批渲染
-			const batchRender = () => {
-				requestAnimationFrame(() => {
-					container.replaceChildren(fragment);
-					container.classList.remove("output-placeholder");
-				});
-			};
-
-			if ("requestIdleCallback" in window) {
-				requestIdleCallback(batchRender, { timeout: 1000 });
-			} else {
-				batchRender();
-			}
-		} catch (error) {
-			console.error("Error rendering output:", error);
-			container.setText("Error rendering output");
-		}
-	}
-
-	private createStreamContent(output: JupyterOutput, container: HTMLElement) {
-		const pre = document.createElement("pre");
-		pre.textContent = output.text?.join("") || "";
-		container.appendChild(pre);
-	}
-
-	private async createRichContent(
-		output: JupyterOutput,
-		container: HTMLElement
-	) {
-		const text = output.data?.["text/plain"]?.join("") || "";
-		const isIPythonImage = text.includes("IPython.core.display.Image");
-
-		if (isIPythonImage) {
-			await this.createImageContent(output, container);
-		} else if (output.data?.["text/html"]) {
-			this.createHtmlContent(output, container);
-		} else if (output.data?.["text/plain"]) {
-			this.createTextContent(text, container);
-		}
-	}
-
-	private async createImageContent(
-		output: JupyterOutput,
-		container: HTMLElement
-	) {
-		const imageData = this.findImageData(output);
-		if (imageData) {
-			const img = document.createElement("img");
-			img.loading = "lazy";
-			img.decoding = "async";
-
-			// 预加载图片
-			await new Promise((resolve, reject) => {
-				img.onload = resolve;
-				img.onerror = reject;
-				img.src = `data:image/png;base64,${imageData}`;
-			}).catch(() => {
-				container.appendChild(
-					createEl("div", {
-						text: "Failed to load image",
-						cls: "image-error",
-					})
+				if (imageData) {
+					const img = outputDiv.createEl("img", {
+						attr: {
+							src: `data:image/png;base64,${imageData}`,
+							loading: "lazy",
+						},
+					});
+					this.setupImageElement(img);
+				} else {
+					console.log("No image data found in any location");
+					outputDiv.createEl("div", {
+						cls: "image-placeholder",
+						text: "Image data not available",
+					});
+				}
+			} else if (output.data?.["text/html"]) {
+				const parser = new DOMParser();
+				const doc = parser.parseFromString(
+					output.data["text/html"].join(""),
+					"text/html"
 				);
-				return;
-			});
-
-			container.appendChild(img);
+				outputDiv.append(...Array.from(doc.body.childNodes));
+			} else if (output.data?.["text/plain"]) {
+				outputDiv.createEl("pre").setText(text);
+			}
+		} else if (output.output_type === "error") {
+			const errorDiv = outputDiv.createDiv({ cls: "error-output" });
+			errorDiv
+				.createEl("pre", { cls: "error-traceback" })
+				.setText(output.traceback?.join("\n") || "");
 		}
+
+		// 一次性添加到容器
+		requestAnimationFrame(() => {
+			container.appendChild(fragment);
+		});
 	}
 
-	private findImageData(output: JupyterOutput): string | null {
-		const locations = [
-			output.data?.["image/png"],
-			output.metadata?.["image/png"],
-			output.data?.["application/json"]?.["image/png"],
-			output.data?.["image/jpeg"],
-			output.data?.["application/x-jupyter-data"]?.["image/png"],
-			output.data?.["application/x-jupyter"]?.["image/png"],
-		];
-
-		return locations.find((data) => data) || null;
-	}
-
-	private createHtmlContent(output: JupyterOutput, container: HTMLElement) {
-		if (output.data?.["text/html"]) {
-			const parser = new DOMParser();
-			const doc = parser.parseFromString(
-				output.data["text/html"].join(""),
-				"text/html"
+	// 添加辅助方法来设置图片元素
+	private setupImageElement(img: HTMLImageElement) {
+		img.style.opacity = "0";
+		img.addEventListener("load", () => {
+			img.style.transition = "opacity 0.3s ease-in";
+			img.style.opacity = "1";
+		});
+		img.addEventListener("error", () => {
+			console.error("Failed to load image");
+			img.replaceWith(
+				createEl("div", {
+					text: "Failed to load image",
+					cls: "image-error",
+				})
 			);
-			const htmlFragment = document.createDocumentFragment();
-			htmlFragment.append(...Array.from(doc.body.childNodes));
-			container.appendChild(htmlFragment);
-		}
-	}
-
-	private createTextContent(text: string, container: HTMLElement) {
-		if (text.trim()) {
-			const pre = document.createElement("pre");
-			pre.textContent = text;
-			container.appendChild(pre);
-		}
-	}
-
-	private createErrorContent(output: JupyterOutput, container: HTMLElement) {
-		const errorDiv = document.createElement("div");
-		errorDiv.className = "error-output";
-
-		if (output.ename && output.evalue) {
-			const errorHeader = document.createElement("div");
-			errorHeader.className = "error-header";
-			errorHeader.textContent = `${output.ename}: ${output.evalue}`;
-			errorDiv.appendChild(errorHeader);
-		}
-
-		if (output.traceback) {
-			const errorTraceback = document.createElement("pre");
-			errorTraceback.className = "error-traceback";
-			errorTraceback.textContent = output.traceback.join("\n");
-			errorDiv.appendChild(errorTraceback);
-		}
-
-		container.appendChild(errorDiv);
+		});
 	}
 }
