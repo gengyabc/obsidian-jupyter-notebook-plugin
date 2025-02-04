@@ -13,7 +13,11 @@ import {
 	TFile,
 	ViewCreator,
 	Component,
+	ViewPlugin,
+	ViewUpdate,
+	Decoration,
 } from "obsidian";
+import { EditorView } from "@codemirror/view";
 
 // Remember to rename these classes and interfaces!
 
@@ -680,6 +684,146 @@ export default class JupyterPlugin extends Plugin {
 
 		// Load custom styles
 		this.loadStyles();
+
+		// Add Markdown preview processor
+		this.registerMarkdownPostProcessor(async (el, ctx) => {
+			const embeds = el.querySelectorAll<HTMLElement>(
+				'.internal-embed[src$=".ipynb"]'
+			);
+			if (!embeds.length) return;
+
+			for (const embed of Array.from(embeds)) {
+				try {
+					const src = embed.getAttribute("src");
+					if (!src) continue;
+
+					const file = this.app.metadataCache.getFirstLinkpathDest(
+						src,
+						ctx.sourcePath
+					);
+					if (!file) continue;
+
+					const content = await this.app.vault.read(file);
+					const notebook = JSON.parse(content) as JupyterNotebook;
+
+					// Create preview container
+					const previewContainer = embed.createDiv({
+						cls: "jupyter-notebook-preview",
+					});
+
+					// Render all cells
+					for (const cell of notebook.cells) {
+						const cellDiv = previewContainer.createDiv({
+							cls: "notebook-cell",
+						});
+
+						// Add cell type indicator
+						cellDiv.createDiv({
+							cls: "cell-type",
+							text: cell.cell_type.toUpperCase(),
+						});
+
+						if (cell.cell_type === "code") {
+							const codeDiv = cellDiv.createDiv({
+								cls: "code-cell",
+							});
+							codeDiv.createEl("pre").createEl("code", {
+								text: cell.source.join(""),
+								cls: "language-python",
+							});
+
+							// Render all outputs
+							if (cell.outputs?.length) {
+								const outputsDiv = cellDiv.createDiv({
+									cls: "cell-outputs",
+								});
+								for (const output of cell.outputs) {
+									await this.renderOutput(output, outputsDiv);
+								}
+							}
+						} else if (cell.cell_type === "markdown") {
+							const mdDiv = cellDiv.createDiv({
+								cls: "markdown-cell",
+							});
+							await MarkdownRenderer.render(
+								this.app,
+								cell.source.join(""),
+								mdDiv,
+								ctx.sourcePath,
+								this
+							);
+						}
+					}
+
+					// Add preview to embed element
+					embed.insertAdjacentElement("afterend", previewContainer);
+				} catch (error) {
+					console.error("Preview Notebook Failed:", error);
+				}
+			}
+		});
+
+		// Add preview styles
+		const previewStyle = document.createElement("style");
+		previewStyle.textContent = `
+			.jupyter-notebook-preview {
+				margin: 1em 0;
+				padding: 1em;
+				border: 1px solid var(--background-modifier-border);
+				border-radius: 4px;
+				background: var(--background-primary);
+			}
+			.notebook-cell {
+				margin-bottom: 1em;
+				padding: 0.5em;
+				background: var(--background-secondary);
+				border-radius: 4px;
+			}
+			.cell-type {
+				color: var(--text-muted);
+				font-size: 0.8em;
+				margin-bottom: 0.5em;
+				text-transform: uppercase;
+			}
+			.code-cell pre {
+				margin: 0;
+				padding: 0.5em;
+				background: var(--background-primary);
+				font-family: var(--font-monospace);
+				overflow-x: auto;
+			}
+			.cell-outputs {
+				margin-top: 0.5em;
+				padding-left: 0.5em;
+				border-left: 2px solid var(--text-accent);
+			}
+			.output {
+				margin-top: 0.5em;
+			}
+			.output pre {
+				margin: 0;
+				padding: 0.5em;
+				background: var(--background-primary);
+				overflow-x: auto;
+			}
+			.error-output {
+				color: var(--text-error);
+			}
+			.error-traceback {
+				margin: 0;
+				padding: 0.5em;
+				background: var(--background-secondary);
+				border-radius: 4px;
+			}
+			.output img {
+				max-width: 100%;
+				height: auto;
+			}
+		`;
+		document.head.appendChild(previewStyle);
+
+		// Load settings
+		await this.loadSettings();
 	}
 
 	async openNotebook(file: TFile) {
@@ -1084,8 +1228,221 @@ export default class JupyterPlugin extends Plugin {
 				background-color: rgba(255, 255, 255, 0.05);
 				border-radius: 2px;
 			}
+
+			.output img {
+				max-width: 100%;
+				height: auto;
+				display: block;
+				margin: 0.5em 0;
+				will-change: opacity;
+				contain: content;
+			}
+			.image-error {
+				color: var(--text-error);
+				padding: 0.5em;
+				background: var(--background-secondary);
+				border-radius: 4px;
+				margin: 0.5em 0;
+			}
+			.image-placeholder {
+				padding: 1em;
+				background: var(--background-secondary);
+				border: 1px dashed var(--text-muted);
+				border-radius: 4px;
+				color: var(--text-muted);
+				text-align: center;
+				margin: 0.5em 0;
+				contain: content;
+			}
+			.output pre {
+				contain: content;
+				overflow-x: auto;
+			}
 		`;
 
 		document.head.appendChild(styleEl);
+	}
+
+	private async renderOutput(output: JupyterOutput, container: HTMLElement) {
+		// 创建一个离线的容器来构建内容
+		const virtualContainer = document.createElement("div");
+		virtualContainer.style.position = "absolute";
+		virtualContainer.style.visibility = "hidden";
+		document.body.appendChild(virtualContainer);
+
+		// 使用 IntersectionObserver 延迟加载不在视口中的内容
+		const observer = new IntersectionObserver(
+			(entries) => {
+				entries.forEach((entry) => {
+					if (entry.isIntersecting) {
+						this.renderOutputContent(
+							output,
+							entry.target as HTMLElement
+						);
+						observer.disconnect();
+					}
+				});
+			},
+			{
+				rootMargin: "50px", // 预加载阈值
+			}
+		);
+
+		// 创建占位符
+		const placeholder = container.createDiv({ cls: "output-placeholder" });
+		observer.observe(placeholder);
+
+		return placeholder;
+	}
+
+	private async renderOutputContent(
+		output: JupyterOutput,
+		container: HTMLElement
+	) {
+		// 使用 Web Worker 处理数据转换
+		const processData = async () => {
+			const fragment = document.createDocumentFragment();
+			const outputDiv = fragment.createDiv({ cls: "output" });
+
+			if (output.output_type === "stream") {
+				this.createStreamContent(output, outputDiv);
+			} else if (
+				output.output_type === "execute_result" ||
+				output.output_type === "display_data"
+			) {
+				await this.createRichContent(output, outputDiv);
+			} else if (output.output_type === "error") {
+				this.createErrorContent(output, outputDiv);
+			}
+
+			return fragment;
+		};
+
+		try {
+			const fragment = await processData();
+
+			// 使用 requestAnimationFrame 分批渲染
+			const batchRender = () => {
+				requestAnimationFrame(() => {
+					container.replaceChildren(fragment);
+					container.classList.remove("output-placeholder");
+				});
+			};
+
+			if ("requestIdleCallback" in window) {
+				requestIdleCallback(batchRender, { timeout: 1000 });
+			} else {
+				batchRender();
+			}
+		} catch (error) {
+			console.error("Error rendering output:", error);
+			container.setText("Error rendering output");
+		}
+	}
+
+	private createStreamContent(output: JupyterOutput, container: HTMLElement) {
+		const pre = document.createElement("pre");
+		pre.textContent = output.text?.join("") || "";
+		container.appendChild(pre);
+	}
+
+	private async createRichContent(
+		output: JupyterOutput,
+		container: HTMLElement
+	) {
+		const text = output.data?.["text/plain"]?.join("") || "";
+		const isIPythonImage = text.includes("IPython.core.display.Image");
+
+		if (isIPythonImage) {
+			await this.createImageContent(output, container);
+		} else if (output.data?.["text/html"]) {
+			this.createHtmlContent(output, container);
+		} else if (output.data?.["text/plain"]) {
+			this.createTextContent(text, container);
+		}
+	}
+
+	private async createImageContent(
+		output: JupyterOutput,
+		container: HTMLElement
+	) {
+		const imageData = this.findImageData(output);
+		if (imageData) {
+			const img = document.createElement("img");
+			img.loading = "lazy";
+			img.decoding = "async";
+
+			// 预加载图片
+			await new Promise((resolve, reject) => {
+				img.onload = resolve;
+				img.onerror = reject;
+				img.src = `data:image/png;base64,${imageData}`;
+			}).catch(() => {
+				container.appendChild(
+					createEl("div", {
+						text: "Failed to load image",
+						cls: "image-error",
+					})
+				);
+				return;
+			});
+
+			container.appendChild(img);
+		}
+	}
+
+	private findImageData(output: JupyterOutput): string | null {
+		const locations = [
+			output.data?.["image/png"],
+			output.metadata?.["image/png"],
+			output.data?.["application/json"]?.["image/png"],
+			output.data?.["image/jpeg"],
+			output.data?.["application/x-jupyter-data"]?.["image/png"],
+			output.data?.["application/x-jupyter"]?.["image/png"],
+		];
+
+		return locations.find((data) => data) || null;
+	}
+
+	private createHtmlContent(output: JupyterOutput, container: HTMLElement) {
+		if (output.data?.["text/html"]) {
+			const parser = new DOMParser();
+			const doc = parser.parseFromString(
+				output.data["text/html"].join(""),
+				"text/html"
+			);
+			const htmlFragment = document.createDocumentFragment();
+			htmlFragment.append(...Array.from(doc.body.childNodes));
+			container.appendChild(htmlFragment);
+		}
+	}
+
+	private createTextContent(text: string, container: HTMLElement) {
+		if (text.trim()) {
+			const pre = document.createElement("pre");
+			pre.textContent = text;
+			container.appendChild(pre);
+		}
+	}
+
+	private createErrorContent(output: JupyterOutput, container: HTMLElement) {
+		const errorDiv = document.createElement("div");
+		errorDiv.className = "error-output";
+
+		if (output.ename && output.evalue) {
+			const errorHeader = document.createElement("div");
+			errorHeader.className = "error-header";
+			errorHeader.textContent = `${output.ename}: ${output.evalue}`;
+			errorDiv.appendChild(errorHeader);
+		}
+
+		if (output.traceback) {
+			const errorTraceback = document.createElement("pre");
+			errorTraceback.className = "error-traceback";
+			errorTraceback.textContent = output.traceback.join("\n");
+			errorDiv.appendChild(errorTraceback);
+		}
+
+		container.appendChild(errorDiv);
 	}
 }
