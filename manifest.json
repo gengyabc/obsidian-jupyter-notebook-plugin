@@ -1,12 +1,15 @@
 {
 	"id": "jupyter-notebook-viewer",
 	"name": "Jupyter Notebook Viewer",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"minAppVersion": "1.4.0",
 	"description": "View and edit Jupyter notebooks",
 	"author": "Geng",
 	"authorUrl": "https://github.com/gengyabc",
 	"isDesktopOnly": false,
+	"styles": [
+		"styles.css"
+	],
 	"supportedExtensions": [
 		"ipynb"
 	]

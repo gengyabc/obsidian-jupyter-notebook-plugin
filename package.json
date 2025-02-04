@@ -1,7 +1,7 @@
 {
 	"name": "obsidian-jupyter-notebook-plugin",
-	"version": "0.1.0",
-	"description": "Jupyter Notebook viewer and simple editor for Obsidian",
+	"version": "0.1.1",
+	"description": "View and edit Jupyter notebooks",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
@@ -12,7 +12,7 @@
 		"jupyter",
 		"notebook"
 	],
-	"author": "",
+	"author": "Geng",
 	"license": "MIT",
 	"dependencies": {
 		"prismjs": "^1.29.0"
